@@ -18,8 +18,8 @@ def clean_to_float(val, num_pattern):
     return val
 
 @st.cache_data
-def process_uploaded_files(uploaded_files, group_col, drop_cols):
-    """Combines, cleans, and sorts uploaded CSV/Excel files."""
+def load_raw_combined_data(uploaded_files):
+    """Combines files without renaming columns yet to allow for selection."""
     all_dfs = []
     num_pattern = re.compile(r'^-?\d+(?:,\d+)?$')
 
@@ -34,19 +34,12 @@ def process_uploaded_files(uploaded_files, group_col, drop_cols):
         return None
 
     combined_df = pd.concat(all_dfs, ignore_index=True)
-
-    # Column maintenance
-    cols = list(combined_df.columns)
-    cols[0] = group_col
-    combined_df.columns = cols
-    combined_df.drop(columns=drop_cols, errors='ignore', inplace=True)
-
-    # Conversion & Cleaning
+    
+    # Cleaning numeric values immediately
     combined_df = combined_df.map(lambda x: clean_to_float(x, num_pattern))
-    combined_df.sort_values(by=group_col, ascending=True, inplace=True)
     combined_df.drop_duplicates(inplace=True)
     
-    return combined_df.reset_index(drop=True)
+    return combined_df
 
 def get_extreme_values(df, group_col, component_list):
     """Calculates min/max for each designation."""
@@ -72,90 +65,127 @@ def get_extreme_values(df, group_col, component_list):
 def to_excel(df):
     """Converts dataframe to an Excel buffer for download."""
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Sheet1')
     return output.getvalue()
 
+
 # --- UI LAYOUT ---
 st.title("🏗️ Consteel Reaction Extreme Value Finder")
-st.markdown("Upload your reaction CSV/Excel files to find the governing min/max values.")
 
-with st.sidebar:
-    st.header("Settings")
-    group_column = st.text_input("Group Column Name", "Designation")
-    components = st.multiselect(
-        "Reaction Components", 
-        ['Rx [kN]', 'Ry [kN]', 'Rz [kN]', 'Rxx [kNm]', 'Ryy [kNm]', 'Rzz [kNm]'],
-        default=['Rx [kN]', 'Ry [kN]', 'Rz [kN]', 'Rxx [kNm]', 'Ryy [kNm]', 'Rzz [kNm]']
-    )
-    drop_list = st.text_input("Columns to drop (comma separated)", "Dominant").split(',')
-
-# 1. FILE UPLOAD
 uploaded_files = st.file_uploader("Upload CSV or Excel files", type=['csv', 'xlsx', 'xls'], accept_multiple_files=True)
 
 if uploaded_files:
-    # 2. DATA PROCESSING
-    combined_df = process_uploaded_files(uploaded_files, group_column, drop_list)
-    
-    if combined_df is not None:
-        st.subheader("Combined Data Preview")
-        st.dataframe(combined_df, width='stretch')
+    # 1. INITIAL DATA LOAD
+    raw_df = load_raw_combined_data(uploaded_files)
+    all_columns = raw_df.columns.tolist()
 
-        # 3. EXTREME VALUES CALCULATION
-        st.divider()
-        st.subheader("📊 Individual Support Extremes")
+    with st.sidebar:
+        st.header("Settings")
         
-        df_extremes = get_extreme_values(combined_df, group_column, components)
-        st.dataframe(df_extremes, width='stretch')
+        # 2. DYNAMIC GROUP COLUMN SELECTION
+        # Defaults to the first column [index=0]
+        group_column = st.selectbox(
+            "Select Grouping Column (ID)", 
+            options=all_columns, 
+            index=0,
+            help="This column identifies individual supports. It defaults to the first column in your file."
+        )
+        
+        # Option to rename that column if needed (optional)
+        # rename_col = st.checkbox("Rename this column in export?", value=False)
+        # final_group_name = group_column
+        # if rename_col:
+        #     final_group_name = st.text_input("New Name", value="Designation")
 
-        excel_data = to_excel(df_extremes)
-        st.download_button(
-            label="📥 Download Individual Extremes (Excel)",
-            data=excel_data,
-            file_name="Individual Extremes.xlsx",
-            mime="application/vnd.ms-excel"
+        # 3. COLUMN DROPPING
+        cols_to_drop = st.multiselect(
+            "Select columns to remove/drop:",
+            options=[c for c in all_columns if c != group_column],
+            default=[]
+        )
+        
+        # 4. COMPONENT SELECTION
+        remaining_cols = [c for c in all_columns if c not in cols_to_drop and c != group_column]
+        default_comps = [c for c in ['Rx [kN]', 'Ry [kN]', 'Rz [kN]', 'Rxx [kNm]', 'Ryy [kNm]', 'Rzz [kNm]'] if c in remaining_cols]
+        
+        components = st.multiselect(
+            "Reaction Components for Analysis", 
+            options=remaining_cols,
+            default=default_comps
         )
 
-        # 4. GROUPED ANALYSIS
-        st.divider()
-        st.subheader("👥 Support Group Analysis")
-        
-        # Get and sort unique values for the UI
-        unique_supports = sorted(combined_df[group_column].unique().tolist())
+    # Apply processing based on sidebar choices
+    combined_df = raw_df.drop(columns=cols_to_drop)
+    active_group_col = group_column
 
-        # Display the available supports so the user knows what to type
-        st.info(f"**Available Supports:** {', '.join(map(str, unique_supports))}")
+    combined_df.sort_values(by=active_group_col, ascending=True, inplace=True)
+    combined_df.reset_index()
+    
 
-        group_input = st.text_input("Define a support group (e.g., P31, P32, P35, P36)", "P31, P32, P35, P36")
+    # --- DATA DISPLAY & ANALYSIS ---
+    st.subheader("Combined Data Preview")
+    number_of_rows = st.number_input(label="Number of rows to see", value=5, step=1, width=200)
+    st.dataframe(combined_df.head(number_of_rows), use_container_width=True)
+
+    # 3. EXTREME VALUES CALCULATION
+    st.divider()
+    st.subheader("📊 Individual Support Extremes")
+    
+    df_extremes = get_extreme_values(combined_df, active_group_col, components)
+    st.dataframe(df_extremes, use_container_width=True)
+
+    excel_data = to_excel(df_extremes)
+    st.download_button(
+        label="📥 Download Individual Extremes (Excel)",
+        data=excel_data,
+        file_name="Reaction Extremes for each support.xlsx",
+        mime="application/vnd.ms-excel"
+    )
+
+    # 4. GROUPED ANALYSIS (Checkbox List / Multiselect)
+    st.divider()
+    st.subheader("👥 Support Group Analysis")
+    
+    unique_supports = sorted(combined_df[active_group_col].unique().tolist())
+    
+    selected_group = st.multiselect("Select supports for group analysis:", options=unique_supports)
+
+    if selected_group:
+        sub_df = combined_df[combined_df[active_group_col].isin(selected_group)]
         
-        if group_input:
-            target_group = [s.strip() for s in group_input.split(',')]
-            sub_df = combined_df[combined_df[group_column].astype(str).isin(target_group)]
+        if not sub_df.empty:
+            group_extreme_rows = []
+            for comp in components:
+                if comp in sub_df.columns:
+                    idx_min = sub_df[comp].idxmin()
+                    idx_max = sub_df[comp].idxmax()
+                    
+                    row_min = combined_df.loc[[idx_min]].copy()
+                    row_min['Type'] = f"{comp}_MIN"
+                    row_max = combined_df.loc[[idx_max]].copy()
+                    row_max['Type'] = f"{comp}_MAX"
+                    group_extreme_rows.extend([row_min, row_max])
             
-            if not sub_df.empty:
-                group_extreme_rows = []
-                for comp in components:
-                    if comp in sub_df.columns:
-                        idx_min = sub_df[comp].idxmin()
-                        idx_max = sub_df[comp].idxmax()
-                        
-                        row_min = combined_df.loc[[idx_min]].copy()
-                        row_min['Type'] = f"{comp}_MIN"
-                        row_max = combined_df.loc[[idx_max]].copy()
-                        row_max['Type'] = f"{comp}_MAX"
-                        group_extreme_rows.extend([row_min, row_max])
-                
-                df_group_output = pd.concat(group_extreme_rows, ignore_index=True)
-                st.dataframe(df_group_output, use_container_width=True)
-                
-                group_excel = to_excel(df_group_output)
-                st.download_button(
-                    label=f"📥 Download Group {group_input[:10]}... Extremes",
-                    data=group_excel,
-                    file_name="Group_Extremes.xlsx",
-                    mime="application/vnd.ms-excel"
-                )
-            else:
-                st.warning("No data found for the specified group members.")
+            df_group_output = pd.concat(group_extreme_rows, ignore_index=True)
+            st.dataframe(df_group_output, use_container_width=True)
+            
+            # --- DYNAMIC FILENAME CONSTRUCTION ---
+            # 1. Join names with underscores
+            group_names_str = "_".join(map(str, selected_group))
+            
+            # 2. Basic cleanup: replace spaces or dots with underscores for a cleaner filename
+            clean_names = group_names_str.replace(" ", "_").replace(".", "_")
+            
+            # 3. Final filename string
+            dynamic_filename = f"Group_Extremes_{clean_names}.xlsx"
+
+            group_excel = to_excel(df_group_output)
+            st.download_button(
+                label="📥 Download Group Extremes",
+                data=group_excel,
+                file_name=dynamic_filename,
+                mime="application/vnd.ms-excel"
+            )
 else:
     st.info("Please upload one or more files to begin.")
