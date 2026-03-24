@@ -112,13 +112,20 @@ if uploaded_files:
         st.download_button(
             label="📥 Download Individual Extremes (Excel)",
             data=excel_data,
-            file_name="Support_Extremes.xlsx",
+            file_name="Individual Extremes.xlsx",
             mime="application/vnd.ms-excel"
         )
 
         # 4. GROUPED ANALYSIS
         st.divider()
         st.subheader("👥 Support Group Analysis")
+        
+        # Get and sort unique values for the UI
+        unique_supports = sorted(combined_df[group_column].unique().tolist())
+
+        # Display the available supports so the user knows what to type
+        st.info(f"**Available Supports:** {', '.join(map(str, unique_supports))}")
+
         group_input = st.text_input("Define a support group (e.g., P31, P32, P35, P36)", "P31, P32, P35, P36")
         
         if group_input:
