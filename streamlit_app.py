@@ -72,7 +72,7 @@ def get_extreme_values(df, group_col, component_list):
 def to_excel(df):
     """Converts dataframe to an Excel buffer for download."""
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Sheet1')
     return output.getvalue()
 
